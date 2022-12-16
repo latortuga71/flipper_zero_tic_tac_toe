@@ -2,6 +2,38 @@
 #include <gui/gui.h>
 #include <input/input.h>
 #include <stdlib.h>
+#include <notification/notification.h>
+#include <notification/notification_messages.h>
+
+// taken from snake game for testing.
+const NotificationSequence sequence_lose = {
+    &message_vibro_on,
+
+    &message_note_ds4,
+    &message_delay_10,
+    &message_sound_off,
+    &message_delay_10,
+
+    &message_note_ds4,
+    &message_delay_10,
+    &message_sound_off,
+    &message_delay_10,
+
+    &message_note_ds4,
+    &message_delay_10,
+    &message_sound_off,
+    &message_delay_10,
+
+    &message_vibro_off,
+    NULL,
+};
+
+const NotificationSequence sequence_win = {
+    &message_note_c7,
+    &message_delay_50,
+    &message_sound_off,
+    NULL,
+};
 
 // Handling Events
 typedef enum {
@@ -39,9 +71,11 @@ typedef struct {
     PlayerType currentTurn;         // keep track of whos turn it is
     SelectedTile selectedTile;      // keep track of highlighted tile 
     PlayerType winner;
+    bool gameOver;
 } GlobalAppState;
 
 static void init_app_state(GlobalAppState* app_state){
+    app_state->gameOver = false;
     app_state->score = 0;
     // randomize who goes first in future
     app_state->currentTurn = Human;
@@ -269,13 +303,17 @@ static void computer_move(GlobalAppState* app_state){
     return; 
 }
 
-static bool handle_user_input(ApplicationEvent* event, GlobalAppState* app_state){
+static bool handle_user_input(ApplicationEvent* event, GlobalAppState* app_state, NotificationApp* notification){
     // this should proably be reset in the render callback to avoid issues.
     if (app_state->winner != None){
-        if (app_state->winner == Human)
+        if (app_state->winner == Human){
+            notification_message(notification,&sequence_win);
             app_state->score++;
-        if (app_state->winner == Computer && app_state->score > 0)
-            app_state->score--;
+        }
+        if (app_state->winner == Computer && app_state->score > 0){
+            notification_message_block(notification,&sequence_lose);            
+            app_state->gameOver = true;
+        }
         clear_grid(app_state);
         app_state->winner = None;
         return true;
@@ -309,6 +347,9 @@ static bool handle_user_input(ApplicationEvent* event, GlobalAppState* app_state
                     app_state->selectedTile.x--; // move left by one                   
                 break;
             case InputKeyOk:
+                if(app_state->gameOver) {
+                    app_state->gameOver = false;
+                }            
                 // if the spot is empty allow us to use it.
                 if (app_state->grid[app_state->selectedTile.x][app_state->selectedTile.y] == 0) {
                     app_state->grid[app_state->selectedTile.x][app_state->selectedTile.y] = X;       
@@ -345,6 +386,26 @@ static void render_callback(Canvas* const canvas, void* ctx) {
     //snprintf(buffer,sizeof(buffer),"x %d y %d", app_state->selectedTile.x, app_state->selectedTile.y);
     //canvas_draw_str(canvas, 20, 60, buffer);
     // check whos currently playing if its a human trigger the highlighting etc.
+        // Game Over banner
+    if(app_state->gameOver) {
+        // Screen is 128x64 px
+        canvas_clear(canvas);
+        canvas_set_color(canvas, ColorWhite);
+        canvas_draw_box(canvas, 34, 20, 62, 24);
+
+        canvas_set_color(canvas, ColorBlack);
+        canvas_draw_frame(canvas, 34, 20, 62, 24);
+
+        canvas_set_font(canvas, FontPrimary);
+        canvas_draw_str(canvas, 37, 31, "Game Over");
+
+        canvas_set_font(canvas, FontSecondary);
+        char buffer[12];
+        snprintf(buffer, sizeof(buffer), "Score: %d", app_state->score);
+        canvas_draw_str_aligned(canvas, 64, 41, AlignCenter, AlignBottom, buffer);
+        release_mutex((ValueMutex*)ctx,app_state);
+        return;
+    }
     if (app_state->currentTurn == Human){
         // draw X in box where user is
         uint8_t x = app_state->selectedTile.x;
@@ -374,11 +435,12 @@ int32_t tic_tac_toe_app(){
     Gui* gui = furi_record_open("gui");
     gui_add_view_port(gui,view_port,GuiLayerFullscreen);
     ApplicationEvent event;
+    NotificationApp* notification = furi_record_open(RECORD_NOTIFICATION);
     for (bool processing = true; processing;){
         FuriStatus event_status = furi_message_queue_get(event_queue,&event,100);
         app_state = (GlobalAppState*)acquire_mutex_block(&state_mutex);
         if (event_status == FuriStatusOk){
-            if (!handle_user_input(&event,app_state))
+            if (!handle_user_input(&event,app_state,notification))
             processing = false; // breaks
         } else {
             FURI_LOG_D("TicTacToe","FuriMessageQueue: event timeout");
@@ -389,6 +451,7 @@ int32_t tic_tac_toe_app(){
     view_port_enabled_set(view_port,false);
     gui_remove_view_port(gui,view_port);
     furi_record_close("gui");
+    furi_record_close(RECORD_NOTIFICATION);
     view_port_free(view_port);
     furi_message_queue_free(event_queue); 
     return 0;
